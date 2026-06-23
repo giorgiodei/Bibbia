@@ -43,5 +43,5 @@ def get_top5_archi(grafo):
     # Ritorniamo solo i primi 5 elementi
     return lista_archi[:5]
 
-
+#
 
