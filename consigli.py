@@ -1,4 +1,5 @@
-
+#CONTROLLA CHE GLI INPUT DALLA VIEW COINCIDANO CON LE INPUT DELLE QUERY
+#PRENDI I DATI DA GET ARCHI, SE I NODI SONO IN GET NODI CONTINUA A CREARE L'ARCO
 #COPY.DEEPCOPY
 import copy  # Da mettere sempre in cima al file!
 # Esempio: hai una lista di nodi/oggetti
@@ -44,3 +45,7 @@ def handleShapes(self, e):
     for shape in shapes:
         self._view.ddshape.options.append(ft.dropdown.Option(key=str(shape), text=str(shape)))
     self._view.update_page()
+#---------------------------------------------------------
+#SPLIT
+# Usiamo str() per assicurarci di poter fare lo split nel caso fosse un oggetto datetime
+anno = int(str(nodo.date_of_birth).split("-")[0])

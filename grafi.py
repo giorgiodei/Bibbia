@@ -114,6 +114,22 @@ def get_nodi_raggiungibili(self, nodo_partenza):
     componente = nx.node_connected_component(self._graph, nodo_partenza)
     return list(componente)
 
+# -------------------------------------------------------------------
+#return tutti i vicini del nodo con (vicino,peso)
+def getDettagli(self, squadra):
+    if squadra not in self._graph.nodes:
+        return []
+
+    vicini = self._graph.neighbors(squadra)
+    dettagli = []
+
+    for vicino in vicini:
+        peso = self._graph[squadra][vicino]['weight']
+        dettagli.append((vicino, peso))
+
+    dettagli.sort(key=lambda x: x[1], reverse=True)
+
+    return dettagli
 # ---------------------------------------------------------
 # CASO 1: "Trova la componente connessa più grande (con più nodi)"
 
