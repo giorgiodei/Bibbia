@@ -1,5 +1,9 @@
-#CONTROLLA CHE GLI INPUT DALLA VIEW COINCIDANO CON LE INPUT DELLE QUERY
+#CONTROLLA CHE GLI INPUT DALLA VIEW COINCIDANO CON LE INPUT DELLE QUERY e che le query contengano tutte lo stesso filtro dato in input
 #PRENDI I DATI DA GET ARCHI, SE I NODI SONO IN GET NODI CONTINUA A CREARE L'ARCO
+if nodo1 in self._graph and nodo2 in self._graph:
+                peso1 = self._pesoMap.get(a1)
+                peso2 = self._pesoMap.get(a2)
+                pesotot = peso1 + peso2
 #COPY.DEEPCOPY
 #SE NEL DB VUOI OTTENERE UNA SOLA RIGA DI DATI ALLORA USA row = cursor.fetcone() senza ciclo for
 #Trovi la data in Invoice, se vuoi estrapolare l'anno usa YEAR(i.InvoiceDate)
@@ -15,6 +19,7 @@ except ValueError:
 if k <= 0:
     self._view.create_alert("Inserisci un numero positivo")
     return
+#n  on dimenticare distinct
 
 
 import copy  # Da mettere sempre in cima al file!
