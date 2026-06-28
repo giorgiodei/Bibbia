@@ -359,8 +359,9 @@ SELECT
     e2.FirstName AS Capo
 FROM Employee e1
 LEFT JOIN Employee e2 ON e1.ReportsTo = e2.EmployeeId
+
 # ==============================================================================
-# 🎸 CHINOOK (Base) - GRAFO
+# 🎸 CHINOOK (Base) - NODI
 # ==============================================================================
 
 
@@ -387,20 +388,6 @@ JOIN Genre  g  ON t.GenreId   = g.GenreId
 WHERE g.Name = 'Rock'
 ORDER BY a.Name;
 
-# ---> 3. Popolarità artista (peso nodo)
-Totale quantità venduta per artista nel genere. Il peso dell'arco nel grafo è pop(u)+pop(v).
-
-SELECT a.ArtistId, a.Name,
-       SUM(il.Quantity) AS Popolarita
-FROM Artist       a
-JOIN Album        al ON a.ArtistId  = al.ArtistId
-JOIN Track        t  ON al.AlbumId  = t.AlbumId
-JOIN Genre        g  ON t.GenreId   = g.GenreId
-JOIN InvoiceLine  il ON t.TrackId   = il.TrackId
-WHERE g.Name = 'Rock'
-GROUP BY a.ArtistId, a.Name
-ORDER BY Popolarita DESC;
-
 # ---> 4. Artista più influente (peso uscenti - entranti)
 In Python il modello calcola: influenza = peso_uscenti - peso_entranti. In SQL è possibile ma complesso — domanda orale tipica: "come lo faresti in SQL?"
 -- Versione SQL (per capire la logica, non la query esatta del DAO)
@@ -424,6 +411,296 @@ ORDER BY Pop DESC
 LIMIT 1;
 
 
+# ---> 1. VERTICI: Artisti per Fatturato Reale (Quantità * Prezzo)
+SIM1_VERTICI_FATTURATO_REALE = """
+SELECT a.ArtistId, a.Name, SUM(il.UnitPrice * il.Quantity) AS IncassoTotale
+FROM Artist a
+JOIN Album al ON a.ArtistId = al.ArtistId
+JOIN Track t ON al.AlbumId = t.AlbumId
+JOIN InvoiceLine il ON t.TrackId = il.TrackId
+GROUP BY a.ArtistId, a.Name
+HAVING IncassoTotale > %s
+"""
+
+# ==============================================================================
+# 💡 TEMPLATE DAO ARCHI e PESO
+# ==============================================================================
+def template_get_edges(idMap, param):
+    # conn = DBConnect.get_connection()
+    # cursor = conn.cursor(dictionary=True)
+    # cursor.execute(CHINOOK_ARCHI_STESSA_PLAYLIST, (param,))
+    edges = []
+    # for row in cursor:
+    #     v1 = idMap.get(row["ar1"])
+    #     v2 = idMap.get(row["ar2"])
+    #     if v1 is not None and v2 is not None:
+    #         edges.append((v1, v2, row["peso"]))
+    # cursor.close()
+    # conn.close()
+    return edges
+# ==============================================================================
+# Archi = Coppie di Clienti (Customer) che hanno comprato almeno una traccia in comune
+SELECT DISTINCT c1.CustomerId AS Cliente1, c2.CustomerId AS Cliente2, il1.TrackId
+FROM Invoice i1, InvoiceLine il1, Customer c1,
+     Invoice i2, InvoiceLine il2, Customer c2
+WHERE i1.InvoiceId = il1.InvoiceId
+  AND i1.CustomerId = c1.CustomerId
+  AND i2.InvoiceId = il2.InvoiceId
+  AND i2.CustomerId = c2.CustomerId
+  AND il1.TrackId = il2.TrackId
+  AND c1.CustomerId < c2.CustomerId
+
+# ==============================================================================
+Archi = Coppie di Tracce acquistate insieme nella stessa Fattura (Invoice)
+SELECT il1.TrackId AS Traccia1, il2.TrackId AS Traccia2, COUNT(*) AS VolteComprateInsieme
+FROM InvoiceLine il1, InvoiceLine il2
+WHERE il1.InvoiceId = il2.InvoiceId
+  AND il1.TrackId < il2.TrackId
+GROUP BY il1.TrackId, il2.TrackId
+
+# ==============================================================================
+Arco tra due clienti se hanno acquistato lo stesso artista
+SELECT c1.CustomerId AS id1, c2.CustomerId AS id2, COUNT(DISTINCT ar.ArtistId) AS peso
+FROM customer c1, invoice i1, invoiceline il1, track t1, album al1, artist ar,
+     customer c2, invoice i2, invoiceline il2, track t2, album al2
+WHERE c1.CustomerId = i1.CustomerId
+AND i1.InvoiceId = il1.InvoiceId
+AND il1.TrackId = t1.TrackId
+AND t1.AlbumId = al1.AlbumId
+AND al1.ArtistId = ar.ArtistId
+
+AND c2.CustomerId = i2.CustomerId
+AND i2.InvoiceId = il2.InvoiceId
+AND il2.TrackId = t2.TrackId
+AND t2.AlbumId = al2.AlbumId
+AND al2.ArtistId = ar.ArtistId
+
+AND c1.CustomerId < c2.CustomerId
+
+GROUP BY c1.CustomerId, c2.CustomerId
+
+# ==============================================================================
+
+Arco orientato cliente A → cliente B se A compra prima di B
+SELECT DISTINCT c1.CustomerId AS id1, c2.CustomerId AS id2
+FROM customer c1, invoice i1,
+     customer c2, invoice i2
+WHERE c1.CustomerId = i1.CustomerId
+AND c2.CustomerId = i2.CustomerId
+AND c1.CustomerId <> c2.CustomerId
+AND i1.InvoiceDate < i2.InvoiceDate
+# ==============================================================================
+
+# ---> 2. ARCHI: Artisti comprati dallo stesso Cliente (Uso della CTE 'WITH')
+ "Il peso dell'arco tra l'artista A e l'artista B è pari al numero di clienti che hanno acquistato brani di entrambi"
+# Se il cliente 12 e il cliente 45 hanno comprato sia i dischi degli U2 (ar1) che degli AC/DC (ar2), il database conterà quei 2 clienti distinti.
+SIM1_ARCHI_STESSO_CLIENTE_CTE = """
+WITH ArtistCustomers AS (
+    SELECT DISTINCT a.ArtistId, i.CustomerId
+    FROM Artist a
+    JOIN Album al ON a.ArtistId = al.ArtistId
+    JOIN Track t ON al.AlbumId = t.AlbumId
+    JOIN InvoiceLine il ON t.TrackId = il.TrackId
+    JOIN Invoice i ON il.InvoiceId = i.InvoiceId
+)
+SELECT ac1.ArtistId AS ar1, ac2.ArtistId AS ar2, COUNT(DISTINCT ac1.CustomerId) AS peso
+FROM ArtistCustomers ac1
+JOIN ArtistCustomers ac2 ON ac1.CustomerId = ac2.CustomerId
+WHERE ac1.ArtistId < ac2.ArtistId
+GROUP BY ac1.ArtistId, ac2.ArtistId
+"""
+# ==============================================================================
+# ---> 3. ARCHI: Relazione Temporale (Fatture in giorni vicini)
+# Su SQLite si usa julianday() per le differenze in giorni
+SIM1_ARCHI_FATTURE_VICINE = """
+SELECT i1.InvoiceId AS inv1, i2.InvoiceId AS inv2,
+       ABS(julianday(i1.InvoiceDate) - julianday(i2.InvoiceDate)) AS diff_giorni
+FROM Invoice i1
+JOIN Invoice i2 ON i1.CustomerId = i2.CustomerId
+WHERE i1.InvoiceId < i2.InvoiceId
+  AND ABS(julianday(i1.InvoiceDate) - julianday(i2.InvoiceDate)) <= %s
+"""
+
+# ==============================================================================
+Arco tra due clienti se hanno acquistato almeno un artista in comune
+Peso = numero di artisti in comune.
+
+SELECT q1.CustomerId AS idA,
+       q2.CustomerId AS idB,
+       COUNT(DISTINCT q1.ArtistId) AS peso
+FROM (
+    SELECT DISTINCT c.CustomerId, ar.ArtistId
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+) q1,
+(
+    SELECT DISTINCT c.CustomerId, ar.ArtistId
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+) q2
+WHERE q1.CustomerId < q2.CustomerId
+  AND q1.ArtistId = q2.ArtistId
+GROUP BY q1.CustomerId, q2.CustomerId
+# ==============================================================================
+Arco tra due artisti se sono stati acquistati dallo stesso cliente
+
+Peso = numero di clienti che hanno acquistato entrambi gli artisti.
+
+SELECT q1.ArtistId AS idA,
+       q2.ArtistId AS idB,
+       COUNT(DISTINCT q1.CustomerId) AS peso
+FROM (
+    SELECT DISTINCT c.CustomerId, ar.ArtistId
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+) q1,
+(
+    SELECT DISTINCT c.CustomerId, ar.ArtistId
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+) q2
+WHERE q1.ArtistId < q2.ArtistId
+  AND q1.CustomerId = q2.CustomerId
+GROUP BY q1.ArtistId, q2.ArtistId
+# ==============================================================================
+3. Nodi = album
+Arco tra due album se sono stati acquistati dallo stesso cliente
+
+Peso = numero di clienti che hanno acquistato entrambi gli album.
+
+SELECT q1.AlbumId AS idA,
+       q2.AlbumId AS idB,
+       COUNT(DISTINCT q1.CustomerId) AS peso
+FROM (
+    SELECT DISTINCT c.CustomerId, al.AlbumId
+    FROM customer c, invoice i, invoiceline il, track t, album al
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+) q1,
+(
+    SELECT DISTINCT c.CustomerId, al.AlbumId
+    FROM customer c, invoice i, invoiceline il, track t, album al
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+) q2
+WHERE q1.AlbumId < q2.AlbumId
+  AND q1.CustomerId = q2.CustomerId
+GROUP BY q1.AlbumId, q2.AlbumId
+# ==============================================================================
+4. Nodi = tracce
+Arco tra due tracce se compaiono nella stessa fattura
+
+Peso = numero di fatture in cui le due tracce sono state acquistate insieme.
+
+SELECT q1.TrackId AS idA,
+       q2.TrackId AS idB,
+       COUNT(DISTINCT q1.InvoiceId) AS peso
+FROM (
+    SELECT DISTINCT il.InvoiceId, t.TrackId
+    FROM invoiceline il, track t
+    WHERE il.TrackId = t.TrackId
+) q1,
+(
+    SELECT DISTINCT il.InvoiceId, t.TrackId
+    FROM invoiceline il, track t
+    WHERE il.TrackId = t.TrackId
+) q2
+WHERE q1.TrackId < q2.TrackId
+  AND q1.InvoiceId = q2.InvoiceId
+GROUP BY q1.TrackId, q2.TrackId
+
+Nel grafo:
+
+Traccia A -- Traccia B
+peso = quante volte sono state comprate nella stessa fattura
+
+Questa è molto bella perché sfrutta bene:
+
+Invoice -> InvoiceLine -> Track
+# ==============================================================================
+5. Nodi = generi
+Arco tra due generi se sono stati acquistati dallo stesso cliente
+
+Peso = numero di clienti che hanno acquistato entrambi i generi.
+
+SELECT q1.GenreId AS idA,
+       q2.GenreId AS idB,
+       COUNT(DISTINCT q1.CustomerId) AS peso
+FROM (
+    SELECT DISTINCT c.CustomerId, g.GenreId
+    FROM customer c, invoice i, invoiceline il, track t, genre g
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.GenreId = g.GenreId
+) q1,
+(
+    SELECT DISTINCT c.CustomerId, g.GenreId
+    FROM customer c, invoice i, invoiceline il, track t, genre g
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.GenreId = g.GenreId
+) q2
+WHERE q1.GenreId < q2.GenreId
+  AND q1.CustomerId = q2.CustomerId
+GROUP BY q1.GenreId, q2.GenreId
+
+Nel grafo:
+
+Genere A -- Genere B
+peso = clienti che hanno ascoltato/comprato entrambi
+# ==============================================================================
+6. Nodi = paesi
+Arco tra due paesi se clienti di quei paesi hanno acquistato almeno un artista in comune
+
+Peso = numero di artisti acquistati in entrambi i paesi.
+
+SELECT q1.Country AS idA,
+       q2.Country AS idB,
+       COUNT(DISTINCT q1.ArtistId) AS peso
+FROM (
+    SELECT DISTINCT c.Country, ar.ArtistId
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+) q1,
+(
+    SELECT DISTINCT c.Country, ar.ArtistId
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+) q2
+WHERE q1.Country < q2.Country
+  AND q1.ArtistId = q2.ArtistId
+GROUP BY q1.Country, q2.Country
+# ==============================================================================
 # ---> 4. inserire un arco tra due artisti distinti A e B se esiste almeno un cliente che ha acquis-
 tato almeno una traccia di entrambi gli artisti, sempre limitatamente al genere e al Paese
 selezionati.
@@ -448,81 +725,392 @@ gli artisti.
         GROUP BY a1.ArtistId, a2.ArtistId
 
 # ==============================================================================
-# 🛒 SIMULAZIONE 1: CHINOOK VENDITE (Fatturato reale, Invoice, InvoiceLine)
+2. Peso = numero di tracce comuni tra due clienti
+
+Questo caso esce quando i nodi sono, per esempio:
+
+Clienti
+Fatture
+Album
+Playlist, se ci fosse
+
+Esempio:
+
+Nodo A = Cliente 1
+Nodo B = Cliente 2
+Peso = numero di tracce acquistate da entrambi
+
+Query:
+
+SELECT q1.CustomerId AS idA,
+       q2.CustomerId AS idB,
+       COUNT(DISTINCT q1.TrackId) AS peso
+FROM (
+    SELECT DISTINCT c.CustomerId, t.TrackId
+    FROM customer c, invoice i, invoiceline il, track t
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+) q1,
+(
+    SELECT DISTINCT c.CustomerId, t.TrackId
+    FROM customer c, invoice i, invoiceline il, track t
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+) q2
+WHERE q1.CustomerId < q2.CustomerId
+  AND q1.TrackId = q2.TrackId
+GROUP BY q1.CustomerId, q2.CustomerId
+
 # ==============================================================================
 
-# ---> 1. VERTICI: Artisti per Fatturato Reale (Quantità * Prezzo)
-SIM1_VERTICI_FATTURATO_REALE = """
-SELECT a.ArtistId, a.Name, SUM(il.UnitPrice * il.Quantity) AS IncassoTotale
-FROM Artist a
-JOIN Album al ON a.ArtistId = al.ArtistId
-JOIN Track t ON al.AlbumId = t.AlbumId
-JOIN InvoiceLine il ON t.TrackId = il.TrackId
+Se due clienti hanno acquistato la stessa traccia, metto arco.
+Peso = COUNT(DISTINCT TrackId)
+3. Peso = somma quantità acquistate
+Qui devi usare:
+SUM(il.Quantity)
+oppure, se devi sommare la quantità di due nodi collegati:
+
+SUM(q1.Quantity + q2.Quantity)
+
+Esempio:
+
+Nodi = clienti
+Arco tra due clienti se hanno acquistato la stessa traccia
+Peso = quantità totale acquistata dai due clienti su quelle tracce comuni
+
+Query:
+
+SELECT q1.CustomerId AS idA,
+       q2.CustomerId AS idB,
+       SUM(q1.qta + q2.qta) AS peso
+FROM (
+    SELECT c.CustomerId,
+           t.TrackId,
+           SUM(il.Quantity) AS qta
+    FROM customer c, invoice i, invoiceline il, track t
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+    GROUP BY c.CustomerId, t.TrackId
+) q1,
+(
+    SELECT c.CustomerId,
+           t.TrackId,
+           SUM(il.Quantity) AS qta
+    FROM customer c, invoice i, invoiceline il, track t
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+    GROUP BY c.CustomerId, t.TrackId
+) q2
+WHERE q1.CustomerId < q2.CustomerId
+  AND q1.TrackId = q2.TrackId
+GROUP BY q1.CustomerId, q2.CustomerId
+
+Formula mentale:
+
+Prima calcolo quanto ogni nodo ha comprato.
+Poi confronto due nodi.
+Se hanno qualcosa in comune, sommo le quantità.
+
+# ==============================================================================
+4. Peso = somma importi
+
+Qui la formula sicura è:
+
+SUM(il.UnitPrice * il.Quantity)
+
+Questa è importantissima.
+
+Quando sei dentro invoiceline, non usare quasi mai:
+
+SUM(i.Total)
+
+perché rischi di sommare più volte la stessa fattura.
+
+Caso semplice: spesa totale di un cliente
+SELECT c.CustomerId,
+       SUM(il.UnitPrice * il.Quantity) AS spesa
+FROM customer c, invoice i, invoiceline il
+WHERE c.CustomerId = i.CustomerId
+  AND i.InvoiceId = il.InvoiceId
+GROUP BY c.CustomerId
+Peso arco = spesa comune tra due clienti sugli stessi artisti
+
+Esempio:
+
+Nodi = clienti
+Arco se due clienti hanno acquistato lo stesso artista
+Peso = somma della spesa dei due clienti sugli artisti comuni
+SELECT q1.CustomerId AS idA,
+       q2.CustomerId AS idB,
+       SUM(q1.spesa + q2.spesa) AS peso
+FROM (
+    SELECT c.CustomerId,
+           ar.ArtistId,
+           SUM(il.UnitPrice * il.Quantity) AS spesa
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+    GROUP BY c.CustomerId, ar.ArtistId
+) q1,
+(
+    SELECT c.CustomerId,
+           ar.ArtistId,
+           SUM(il.UnitPrice * il.Quantity) AS spesa
+    FROM customer c, invoice i, invoiceline il, track t, album al, artist ar
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+      AND al.ArtistId = ar.ArtistId
+    GROUP BY c.CustomerId, ar.ArtistId
+) q2
+WHERE q1.CustomerId < q2.CustomerId
+  AND q1.ArtistId = q2.ArtistId
+GROUP BY q1.CustomerId, q2.CustomerId
+
+Formula mentale:
+
+Importo riga = UnitPrice * Quantity
+Peso arco = SUM(importi)
+
+Trappola:
+
+SUM(i.Total)
+
+è pericoloso se hai fatto join con invoiceline.
+# ==============================================================================
+5. Peso = differenza tra date
+
+Questo caso serve nei grafi orientati.
+
+Esempio:
+
+Nodo A = fattura precedente
+Nodo B = fattura successiva
+Arco A -> B se A avviene prima di B
+Peso = giorni tra le due fatture
+
+Si usa:
+
+DATEDIFF(data2, data1)
+
+Query:
+
+SELECT i1.InvoiceId AS idA,
+       i2.InvoiceId AS idB,
+       DATEDIFF(i2.InvoiceDate, i1.InvoiceDate) AS peso
+FROM invoice i1, invoice i2
+WHERE i1.InvoiceId <> i2.InvoiceId
+  AND i1.InvoiceDate < i2.InvoiceDate
+
+Se vuoi solo archi entro massimo K giorni:
+
+SELECT i1.InvoiceId AS idA,
+       i2.InvoiceId AS idB,
+       DATEDIFF(i2.InvoiceDate, i1.InvoiceDate) AS peso
+FROM invoice i1, invoice i2
+WHERE i1.InvoiceId <> i2.InvoiceId
+  AND i1.InvoiceDate < i2.InvoiceDate
+  AND DATEDIFF(i2.InvoiceDate, i1.InvoiceDate) <= %s
+
+Formula mentale:
+
+Grafo orientato temporale:
+A -> B
+se dataA < dataB
+
+peso = DATEDIFF(dataB, dataA)
+
+Attenzione all’ordine:
+
+DATEDIFF(i2.InvoiceDate, i1.InvoiceDate)
+
+significa:
+
+data finale - data iniziale
+
+# ==============================================================================
+6. Peso = numero di fatture comuni
+
+Questo caso esce quando due nodi compaiono nella stessa fattura.
+
+Esempio:
+
+Nodi = tracce
+Arco tra due tracce se sono state comprate nella stessa fattura
+Peso = numero di fatture in cui compaiono insieme
+
+Query:
+
+SELECT q1.TrackId AS idA,
+       q2.TrackId AS idB,
+       COUNT(DISTINCT q1.InvoiceId) AS peso
+FROM (
+    SELECT DISTINCT il.InvoiceId, il.TrackId
+    FROM invoiceline il
+) q1,
+(
+    SELECT DISTINCT il.InvoiceId, il.TrackId
+    FROM invoiceline il
+) q2
+WHERE q1.TrackId < q2.TrackId
+  AND q1.InvoiceId = q2.InvoiceId
+GROUP BY q1.TrackId, q2.TrackId
+
+Formula mentale:
+
+Traccia - Fattura
+Traccia - Fattura
+
+Se due tracce stanno nella stessa fattura, metto arco.
+Peso = COUNT(DISTINCT InvoiceId)
+
+# ==============================================================================
+7. Peso = numero di album comuni
+
+Questo caso esce quando i nodi sono clienti, artisti o generi.
+
+Esempio:
+
+Nodi = clienti
+Arco tra due clienti se hanno acquistato album comuni
+Peso = numero di album acquistati da entrambi
+
+Query:
+
+SELECT q1.CustomerId AS idA,
+       q2.CustomerId AS idB,
+       COUNT(DISTINCT q1.AlbumId) AS peso
+FROM (
+    SELECT DISTINCT c.CustomerId, al.AlbumId
+    FROM customer c, invoice i, invoiceline il, track t, album al
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+) q1,
+(
+    SELECT DISTINCT c.CustomerId, al.AlbumId
+    FROM customer c, invoice i, invoiceline il, track t, album al
+    WHERE c.CustomerId = i.CustomerId
+      AND i.InvoiceId = il.InvoiceId
+      AND il.TrackId = t.TrackId
+      AND t.AlbumId = al.AlbumId
+) q2
+WHERE q1.CustomerId < q2.CustomerId
+  AND q1.AlbumId = q2.AlbumId
+GROUP BY q1.CustomerId, q2.CustomerId
+
+Formula mentale:
+
+Cliente - Album
+Cliente - Album
+# ==============================================================================
+Se due clienti hanno acquistato lo stesso album, metto arco.
+Peso = COUNT(DISTINCT AlbumId)
+Tabella riassuntiva pesi
+Peso richiesto	Cosa uso in SQL
+Numero clienti comuni	COUNT(DISTINCT CustomerId)
+Numero tracce comuni	COUNT(DISTINCT TrackId)
+Numero artisti comuni	COUNT(DISTINCT ArtistId)
+Numero album comuni	COUNT(DISTINCT AlbumId)
+Numero fatture comuni	COUNT(DISTINCT InvoiceId)
+Quantità acquistata	SUM(il.Quantity)
+Importo acquistato	SUM(il.UnitPrice * il.Quantity)
+Differenza tra date	DATEDIFF(dataFinale, dataIniziale)
+Prima data	MIN(InvoiceDate)
+Ultima data	MAX(InvoiceDate)
+Media spesa	AVG(il.UnitPrice * il.Quantity)
+La regola più importante
+
+Quando il peso è un numero di elementi comuni, usi quasi sempre:
+
+COUNT(DISTINCT elementoComune)
+
+Esempi:
+
+COUNT(DISTINCT c.CustomerId)
+COUNT(DISTINCT t.TrackId)
+COUNT(DISTINCT al.AlbumId)
+COUNT(DISTINCT ar.ArtistId)
+COUNT(DISTINCT i.InvoiceId)
+
+Quando il peso è una quantità, usi:
+
+SUM(il.Quantity)
+
+Quando il peso è una spesa, usi:
+
+SUM(il.UnitPrice * il.Quantity)
+
+Quando il peso è una distanza temporale, usi:
+
+DATEDIFF(data2, data1)
+Schema universale da adattare domani
+
+Questa è la query madre:
+
+SELECT q1.idNodo AS idA,
+       q2.idNodo AS idB,
+       COUNT(DISTINCT q1.elementoComune) AS peso
+FROM (
+    SELECT DISTINCT nodo AS idNodo,
+                    elementoComune
+    FROM ...
+    WHERE ...
+) q1,
+(
+    SELECT DISTINCT nodo AS idNodo,
+                    elementoComune
+    FROM ...
+    WHERE ...
+) q2
+WHERE q1.idNodo < q2.idNodo
+  AND q1.elementoComune = q2.elementoComune
+GROUP BY q1.idNodo, q2.idNodo
+
+Devi solo sostituire:
+
+idNodo = il tipo di nodo del grafo
+elementoComune = la cosa che crea il collegamento
+peso = cosa chiede la traccia
+
+Esempi:
+
+Nodi clienti, elemento comune artista
+=> peso = COUNT(DISTINCT ArtistId)
+
+Nodi artisti, elemento comune cliente
+=> peso = COUNT(DISTINCT CustomerId)
+
+Nodi tracce, elemento comune fattura
+=> peso = COUNT(DISTINCT InvoiceId)
+
+Nodi clienti, elemento comune album
+=> peso = COUNT(DISTINCT AlbumId)
+
+
+# ==============================================================================
+# 🎸 CHINOOK - SOLO PESO
+# ==============================================================================
+
+# ---> 3. Popolarità artista (peso nodo)
+Totale quantità venduta per artista nel genere. Il peso dell'arco nel grafo è pop(u)+pop(v).
+
+SELECT a.ArtistId, a.Name,
+       SUM(il.Quantity) AS Popolarita
+FROM Artist       a
+JOIN Album        al ON a.ArtistId  = al.ArtistId
+JOIN Track        t  ON al.AlbumId  = t.AlbumId
+JOIN Genre        g  ON t.GenreId   = g.GenreId
+JOIN InvoiceLine  il ON t.TrackId   = il.TrackId
+WHERE g.Name = 'Rock'
 GROUP BY a.ArtistId, a.Name
-HAVING IncassoTotale > %s
-"""
-
-# ---> 2. ARCHI: Artisti comprati dallo stesso Cliente (Uso della CTE 'WITH')
-# Previene l'esplosione delle Join
-SIM1_ARCHI_STESSO_CLIENTE_CTE = """
-WITH ArtistCustomers AS (
-    SELECT DISTINCT a.ArtistId, i.CustomerId
-    FROM Artist a
-    JOIN Album al ON a.ArtistId = al.ArtistId
-    JOIN Track t ON al.AlbumId = t.AlbumId
-    JOIN InvoiceLine il ON t.TrackId = il.TrackId
-    JOIN Invoice i ON il.InvoiceId = i.InvoiceId
-)
-SELECT ac1.ArtistId AS ar1, ac2.ArtistId AS ar2, COUNT(DISTINCT ac1.CustomerId) AS peso
-FROM ArtistCustomers ac1
-JOIN ArtistCustomers ac2 ON ac1.CustomerId = ac2.CustomerId
-WHERE ac1.ArtistId < ac2.ArtistId
-GROUP BY ac1.ArtistId, ac2.ArtistId
-"""
-
-# ---> 3. ARCHI: Relazione Temporale (Fatture in giorni vicini)
-# Su SQLite si usa julianday() per le differenze in giorni
-SIM1_ARCHI_FATTURE_VICINE = """
-SELECT i1.InvoiceId AS inv1, i2.InvoiceId AS inv2,
-       ABS(julianday(i1.InvoiceDate) - julianday(i2.InvoiceDate)) AS diff_giorni
-FROM Invoice i1
-JOIN Invoice i2 ON i1.CustomerId = i2.CustomerId
-WHERE i1.InvoiceId < i2.InvoiceId
-  AND ABS(julianday(i1.InvoiceDate) - julianday(i2.InvoiceDate)) <= %s
-"""
-
-# ==============================================================================
-# 💡 TEMPLATE DAO ARCHI
-# ==============================================================================
-def template_get_edges(idMap, param):
-    # conn = DBConnect.get_connection()
-    # cursor = conn.cursor(dictionary=True)
-    # cursor.execute(CHINOOK_ARCHI_STESSA_PLAYLIST, (param,))
-    edges = []
-    # for row in cursor:
-    #     v1 = idMap.get(row["ar1"])
-    #     v2 = idMap.get(row["ar2"])
-    #     if v1 is not None and v2 is not None:
-    #         edges.append((v1, v2, row["peso"]))
-    # cursor.close()
-    # conn.close()
-    return edges
-
-# Archi = Coppie di Clienti (Customer) che hanno comprato almeno una traccia in comune
-SELECT DISTINCT c1.CustomerId AS Cliente1, c2.CustomerId AS Cliente2, il1.TrackId
-FROM Invoice i1, InvoiceLine il1, Customer c1,
-     Invoice i2, InvoiceLine il2, Customer c2
-WHERE i1.InvoiceId = il1.InvoiceId
-  AND i1.CustomerId = c1.CustomerId
-  AND i2.InvoiceId = il2.InvoiceId
-  AND i2.CustomerId = c2.CustomerId
-  AND il1.TrackId = il2.TrackId
-  AND c1.CustomerId < c2.CustomerId
-
-
-Archi = Coppie di Tracce acquistate insieme nella stessa Fattura (Invoice)
-SELECT il1.TrackId AS Traccia1, il2.TrackId AS Traccia2, COUNT(*) AS VolteComprateInsieme
-FROM InvoiceLine il1, InvoiceLine il2
-WHERE il1.InvoiceId = il2.InvoiceId
-  AND il1.TrackId < il2.TrackId
-GROUP BY il1.TrackId, il2.TrackId
+ORDER BY Popolarita DESC;

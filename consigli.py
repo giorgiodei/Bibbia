@@ -1,6 +1,22 @@
 #CONTROLLA CHE GLI INPUT DALLA VIEW COINCIDANO CON LE INPUT DELLE QUERY
 #PRENDI I DATI DA GET ARCHI, SE I NODI SONO IN GET NODI CONTINUA A CREARE L'ARCO
 #COPY.DEEPCOPY
+#SE NEL DB VUOI OTTENERE UNA SOLA RIGA DI DATI ALLORA USA row = cursor.fetcone() senza ciclo for
+#Trovi la data in Invoice, se vuoi estrapolare l'anno usa YEAR(i.InvoiceDate)
+#GRAFO DIRETTO USA ID1<ID2, GRAFO NON ORIENTATO USA != o <> per gli archi
+#in SQL MIN(data) ti restituisce la data piu piccola che puo essere None quindi metti if data is not null
+#verifica gli interi con try
+try:
+    k = int(self._view._txtK.value)
+except ValueError:
+    self._view.create_alert("Inserisci un numero intero")
+    return
+
+if k <= 0:
+    self._view.create_alert("Inserisci un numero positivo")
+    return
+
+
 import copy  # Da mettere sempre in cima al file!
 # Esempio: hai una lista di nodi/oggetti
 lista_originale = [nodo1, nodo2, nodo3]
